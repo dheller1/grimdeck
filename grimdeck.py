@@ -12,38 +12,64 @@ _CONFIG_FILE = 'config.json'
 
 
 class Configuration:
-    def __init__(self, save_dir, sync_path):
+    def __init__(self, save_dir, share_path):
         self.save_dir = save_dir
-        self.sync_path = sync_path
+        self.share_path = share_path
+        self.hostname = platform.node()
 
     def check(self):
         if not os.path.isdir(self.save_dir):
             raise IOError(f"Directory '{self.save_dir}' does not exist!")
 
-        if not os.path.isdir(self.sync_path):
-            raise IOError(f"Directory '{self.sync_path}' does not exist!")
+        if not os.path.isdir(self.share_path):
+            raise IOError(f"Directory '{self.share_path}' does not exist!")
 
-    def do_sync(self):
+    def _get_existing_files(self):
+        end_pattern = f'_{self.hostname}.sha256'
+
+        checksums_and_saves = {}
+        for rel_file in os.listdir(self.share_path):
+            if not rel_file.endswith(end_pattern):
+                continue
+            chk_file = os.path.join(self.share_path, rel_file)
+            zip_file = os.path.splitext(chk_file)[0] + '.zip'
+
+            if os.path.isfile(chk_file) and os.path.isfile(zip_file):
+                with open(chk_file, 'r') as f:
+                    hash = f.read().strip()
+                checksums_and_saves[hash] = zip_file
+        return checksums_and_saves
+
+    def sync_to_share_path(self):
         timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
-        hostname = platform.node()
-        archive = f'save_{timestamp}_{hostname}.zip'
-        filename = self._archive_directory(archive, self.save_dir)
-        print(f"Created '{filename}'.")
+        archive = f'save_{timestamp}_{self.hostname}.zip'
+        current_save_file = self._archive_directory(archive, self.save_dir)
+        print(f"Created '{current_save_file}'.")
 
         # checksum
         hash = hashlib.sha256()
-        with open(filename, 'rb') as file:
+        with open(current_save_file, 'rb') as file:
             for block in iter(lambda: file.read(4096), b''):
                 hash.update(block)
+        hash_str = hash.hexdigest()
 
-        hash_filename = os.path.splitext(filename)[0] + '.sha256'
+        existing_saves = self._get_existing_files()
+        identical_save = existing_saves.get(hash_str, None)
+
+        if identical_save is not None:
+            print(f'Synchronization skipped - file with this hash already exists: {identical_save}')
+            os.remove(current_save_file)
+            print(f"Deleted '{current_save_file}'.")
+            return
+
+        hash_filename = os.path.splitext(current_save_file)[0] + '.sha256'
         with open(hash_filename, 'w') as hash_file:
-            hash_file.write(hash.hexdigest())
+            hash_file.write(hash_str)
         print(f"Created checksum file '{hash_filename}'.")
 
-        shutil.move(filename, self.sync_path)
-        shutil.move(hash_filename, self.sync_path)
-        print(f"Moved files to '{self.sync_path}'.")
+        shutil.move(current_save_file, self.share_path)
+        shutil.move(hash_filename, self.share_path)
+        print(f"Moved files to '{self.share_path}'.")
 
     def _archive_directory(self, archive_filename, directory):
         rel_root = os.path.abspath(directory)
@@ -67,8 +93,8 @@ def parse_config_file():
     with open(_CONFIG_FILE, 'r') as config_file:
         config = json.load(config_file)
         save_dir = config.get('save_dir', '')
-        sync_path = config.get('sync_path', '')
-        return Configuration(save_dir, sync_path)
+        share_path = config.get('share_path', '')
+        return Configuration(save_dir, share_path)
 
 
 def main():
@@ -77,7 +103,7 @@ def main():
         sys.exit(f"Configuration file '{_CONFIG_FILE}' could not be read.")
 
     config.check()
-    config.do_sync()
+    config.sync_to_share_path()
 
 
 if __name__ == '__main__':
